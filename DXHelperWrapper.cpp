@@ -1,5 +1,4 @@
 #include "pch.h"
-
 #include "DXHelperWrapper.h"
 
 #include <concrt.h>
@@ -29,6 +28,7 @@ DXHelperWrapper::DXHelperWrapper()
       m_compositionScaleY(1.0f),
       m_height(720.0f),
       m_width(1280.0f) {
+  m_backgroundColor = ColorF(ColorF::AliceBlue);
   this->SizeChanged += ref new Windows::UI::Xaml::SizeChangedEventHandler(
       this, &DXHelperWrapper::OnSizeChanged);
   this->CompositionScaleChanged +=
@@ -53,7 +53,6 @@ void DXHelperWrapper::CreateDeviceIndependentResources() {
 }
 
 void DXHelperWrapper::CreateDeviceResources() {
-
   UINT creationFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 
   D3D_FEATURE_LEVEL featureLevels[] = {
@@ -87,6 +86,16 @@ void DXHelperWrapper::CreateDeviceResources() {
       D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_d2dContext));
 
   m_d2dContext->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+
+  ComPtr<IDXGIFactory1> dxgiFactory;
+  winrt::check_hresult(CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)));
+
+  ComPtr<IDXGIAdapter> dxgiAdapter;
+  winrt::check_hresult(dxgiFactory->EnumAdapters(0, &dxgiAdapter));
+
+  winrt::check_hresult(dxgiAdapter->EnumOutputs(0, &m_dxgiOutput));
+
+  m_loadingComplete = true;
 }
 
 void DXHelperWrapper::CreateSizeDependentResources() {
@@ -130,23 +139,26 @@ void DXHelperWrapper::CreateSizeDependentResources() {
 
     // Get underlying DXGI Device from D3D Device.
     ComPtr<IDXGIDevice1> dxgiDevice;
-    winrt::check_hresult(m_d3dDevice.As(&dxgiDevice));
+    ThrowIfFailed(m_d3dDevice.As(&dxgiDevice));
 
     // Get adapter.
     ComPtr<IDXGIAdapter> dxgiAdapter;
-    winrt::check_hresult(dxgiDevice->GetAdapter(&dxgiAdapter));
+    ThrowIfFailed(dxgiDevice->GetAdapter(&dxgiAdapter));
 
     // Get factory.
     ComPtr<IDXGIFactory2> dxgiFactory;
-    winrt::check_hresult(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory)));
+    ThrowIfFailed(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory)));
 
     ComPtr<IDXGISwapChain1> swapChain;
     // Create swap chain.
-    winrt::check_hresult(dxgiFactory->CreateSwapChainForComposition(
+    ThrowIfFailed(dxgiFactory->CreateSwapChainForComposition(
         m_d3dDevice.Get(), &swapChainDesc, nullptr, &swapChain));
     swapChain.As(&m_swapChain);
 
-    winrt::check_hresult(dxgiDevice->SetMaximumFrameLatency(1));
+    // Ensure that DXGI does not queue more than one frame at a time. This both
+    // reduces latency and ensures that the application will only render after
+    // each VSync, minimizing power consumption.
+    ThrowIfFailed(dxgiDevice->SetMaximumFrameLatency(1));
 
     Dispatcher->RunAsync(
         CoreDispatcherPriority::Normal,
@@ -154,35 +166,58 @@ void DXHelperWrapper::CreateSizeDependentResources() {
             [=]() {
               // Get backing native interface for SwapChainPanel.
               ComPtr<ISwapChainPanelNative> panelNative;
-              winrt::check_hresult(
-                  reinterpret_cast<IUnknown*>(this)->QueryInterface(
-                      IID_PPV_ARGS(&panelNative)));
+              ThrowIfFailed(reinterpret_cast<IUnknown*>(this)->QueryInterface(
+                  IID_PPV_ARGS(&panelNative)));
 
-              winrt::check_hresult(
-                  panelNative->SetSwapChain(m_swapChain.Get()));
+              // Associate swap chain with SwapChainPanel.  This must be done on
+              // the UI thread.
+              ThrowIfFailed(panelNative->SetSwapChain(m_swapChain.Get()));
             },
             CallbackContext::Any));
-
-
-    //m_contentRect = D2D1::RectF(100, 100, 300, 300);
-    //m_backgroundColor = ColorF(ColorF::AliceBlue);
-
-    //winrt::check_hresult(m_d2dContext->CreateSolidColorBrush(ColorF(ColorF::Black), &m_strokeBrush));
-    //winrt::check_hresult(m_d2dContext->CreateSolidColorBrush(ColorF(ColorF::Green), &m_fillBrush));
-
-    //m_d2dContext->SetUnitMode(D2D1_UNIT_MODE::D2D1_UNIT_MODE_PIXELS);
   }
+
+  // Ensure the physical pixel size of the swap chain takes into account both
+  // the XAML SwapChainPanel's logical layout size and any cumulative
+  // composition scale applied due to zooming, render transforms, or the
+  // system's current scaling plateau. For example, if a 100x100 SwapChainPanel
+  // has a cumulative 2x scale transform applied, we instead create a 200x200
+  // swap chain to avoid artifacts from scaling it up by 2x, then apply an
+  // inverse 1/2x transform to the swap chain to cancel out the 2x transform.
+  DXGI_MATRIX_3X2_F inverseScale = {0};
+  inverseScale._11 = 1.0f / m_compositionScaleX;
+  inverseScale._22 = 1.0f / m_compositionScaleY;
+
+  m_swapChain->SetMatrixTransform(&inverseScale);
+
+  D2D1_BITMAP_PROPERTIES1 bitmapProperties = BitmapProperties1(
+      D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+      PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+      m_dipsPerInch * m_compositionScaleX, m_dipsPerInch * m_compositionScaleY);
+
+  // Direct2D needs the DXGI version of the backbuffer surface pointer.
+  ComPtr<IDXGISurface> dxgiBackBuffer;
+  winrt::check_hresult(
+      m_swapChain->GetBuffer(0, IID_PPV_ARGS(&dxgiBackBuffer)));
+
+  // Get a D2D surface from the DXGI back buffer to use as the D2D render
+  // target.
+  winrt::check_hresult(m_d2dContext->CreateBitmapFromDxgiSurface(
+      dxgiBackBuffer.Get(), &bitmapProperties, &m_d2dTargetBitmap));
+
+  m_d2dContext->SetDpi(m_dipsPerInch * m_compositionScaleX,
+                       m_dipsPerInch * m_compositionScaleY);
+  m_d2dContext->SetTarget(m_d2dTargetBitmap.Get());
 }
 
 void DXHelperWrapper::Render() {
+  if (!m_loadingComplete || m_d2dContext == nullptr || m_swapChain == nullptr) {
+    return;
+  }
 
   m_d2dContext->BeginDraw();
   m_d2dContext->Clear(m_backgroundColor);
 
-  //m_d2dContext->FillRectangle(m_contentRect, m_fillBrush.Get());
-  //m_d2dContext->DrawRectangle(m_contentRect, m_strokeBrush.Get());
-
-  winrt::check_hresult(m_d2dContext->EndDraw());
+  ThrowIfFailed(m_d2dContext->EndDraw());
 
   Present();
 }
@@ -194,8 +229,15 @@ void DXHelperWrapper::Present() {
   parameters.pScrollRect = nullptr;
   parameters.pScrollOffset = nullptr;
 
+  HRESULT hr = S_OK;
 
-  winrt::check_hresult(m_swapChain->Present1(1, 0, &parameters));
+  hr = m_swapChain->Present1(1, 0, &parameters);
+
+  if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+    return;
+  } else {
+    winrt::check_hresult(hr);
+  }
 }
 
 void DXHelperWrapper::OnSizeChanged(Object ^ sender, SizeChangedEventArgs ^ e) {
@@ -213,7 +255,6 @@ void DXHelperWrapper::OnCompositionScaleChanged(SwapChainPanel ^ sender,
                                                 Object ^ args) {
   if (m_compositionScaleX != CompositionScaleX ||
       m_compositionScaleY != CompositionScaleY) {
-
     critical_section::scoped_lock lock(m_criticalSection);
 
     m_compositionScaleX = this->CompositionScaleX;
@@ -247,7 +288,26 @@ void DXHelperWrapper::StartRenderLoop() {
       workItemHandler, WorkItemPriority::High, WorkItemOptions::TimeSliced);
 }
 
-void DXHelperWrapper::StopRenderLoop() {
-  m_renderLoopWorker->Cancel();
-}
+void DXHelperWrapper::StopRenderLoop() { m_renderLoopWorker->Cancel(); }
 
+void DXHelperWrapper::OnDeviceLost() {
+  m_loadingComplete = false;
+
+  m_swapChain = nullptr;
+
+  // Make sure the rendering state has been released.
+  m_d3dContext->OMSetRenderTargets(0, nullptr, nullptr);
+
+  m_d2dContext->SetTarget(nullptr);
+  m_d2dTargetBitmap = nullptr;
+
+  m_d2dContext = nullptr;
+  m_d2dDevice = nullptr;
+
+  m_d3dContext->Flush();
+
+  CreateDeviceResources();
+  CreateSizeDependentResources();
+
+  Render();
+}
