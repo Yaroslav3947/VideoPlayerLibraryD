@@ -20,13 +20,17 @@ namespace DXGraphics {
     : public Windows::UI::Xaml::Controls::SwapChainPanel {
  public:
   DXHelperWrapper();
-  void Present();
   void Render();
   void StartRenderLoop();
   void StopRenderLoop();
 
+
  private
  protected:
+  void RenderBitmapOnWindow(ComPtr<ID2D1Bitmap> pBitmap);
+  ComPtr<ID2D1Bitmap> CreateBitmapFromVideoSample(IMFSample  pSample, const UINT32& width,
+                                                  const UINT32& height);
+  void Present();
   void CreateDeviceIndependentResources();
   void CreateDeviceResources();
   void CreateSizeDependentResources();
@@ -39,21 +43,14 @@ namespace DXGraphics {
 
   ComPtr<IDXGIOutput> m_dxgiOutput;
 
-
   ComPtr<ID3D11Device1> m_d3dDevice;
   ComPtr<ID3D11DeviceContext1> m_d3dContext;
   ComPtr<IDXGISwapChain2> m_swapChain;
 
+  ComPtr<ID2D1RenderTarget> m_renderTarget;
+
   ComPtr<ID2D1Factory2> m_d2dFactory;
   ComPtr<ID2D1Device> m_d2dDevice;
-  ComPtr<ID2D1DeviceContext> m_d2dContext;
-  ComPtr<ID2D1Bitmap1> m_d2dTargetBitmap;
-
-  D2D1_RECT_F m_contentRect;
-  D2D1_COLOR_F m_backgroundColor;
-
-  ComPtr<ID2D1SolidColorBrush> m_fillBrush;
-  ComPtr<ID2D1SolidColorBrush> m_strokeBrush;
 
   Concurrency::critical_section m_criticalSection;
 
@@ -71,6 +68,7 @@ namespace DXGraphics {
   Windows::Foundation::IAsyncAction ^ m_renderLoopWorker;
 
   DX::StepTimer m_timer;
+
  private:
   ~DXHelperWrapper();
 };

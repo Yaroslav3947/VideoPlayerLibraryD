@@ -26,9 +26,8 @@ static const float m_dipsPerInch = 96.0f;
 DXHelperWrapper::DXHelperWrapper()
     : m_compositionScaleX(1.0f),
       m_compositionScaleY(1.0f),
-      m_height(720.0f),
-      m_width(1280.0f) {
-  m_backgroundColor = ColorF(ColorF::AliceBlue);
+      m_height(1.0f),
+      m_width(1.0f) {
   this->SizeChanged += ref new Windows::UI::Xaml::SizeChangedEventHandler(
       this, &DXHelperWrapper::OnSizeChanged);
   this->CompositionScaleChanged +=
@@ -77,15 +76,6 @@ void DXHelperWrapper::CreateDeviceResources() {
   ComPtr<IDXGIDevice> dxgiDevice;
   winrt::check_hresult(m_d3dDevice.As(&dxgiDevice));
 
-  // Get D2D device
-  winrt::check_hresult(
-      m_d2dFactory->CreateDevice(dxgiDevice.Get(), &m_d2dDevice));
-
-  // Get D2D context
-  winrt::check_hresult(m_d2dDevice->CreateDeviceContext(
-      D2D1_DEVICE_CONTEXT_OPTIONS_NONE, &m_d2dContext));
-
-  m_d2dContext->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 
   ComPtr<IDXGIFactory1> dxgiFactory;
   winrt::check_hresult(CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory)));
@@ -99,24 +89,20 @@ void DXHelperWrapper::CreateDeviceResources() {
 }
 
 void DXHelperWrapper::CreateSizeDependentResources() {
-  // Ensure dependent objects have been released.
-  m_d2dContext->SetTarget(nullptr);
-  m_d2dTargetBitmap = nullptr;
-  m_d3dContext->OMSetRenderTargets(0, nullptr, nullptr);
-  m_d3dContext->Flush();
-
   m_renderTargetWidth = m_width * m_compositionScaleX;
   m_renderTargetHeight = m_height * m_compositionScaleY;
 
   // If the swap chain already exists, then resize it.
   if (m_swapChain != nullptr) {
+    if (m_renderTarget) {
+      m_renderTarget.Reset();
+    }
     HRESULT hr = m_swapChain->ResizeBuffers(
         2, static_cast<UINT>(m_renderTargetWidth),
         static_cast<UINT>(m_renderTargetHeight), DXGI_FORMAT_B8G8R8A8_UNORM, 0);
 
     if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-      // If the device was removed for any reason, a new device and swap chain
-      // will need to be created.
+      OnDeviceLost();
       return;
 
     } else {
@@ -131,7 +117,8 @@ void DXHelperWrapper::CreateSizeDependentResources() {
     swapChainDesc.Stereo = false;
     swapChainDesc.SampleDesc.Count = 1;
     swapChainDesc.SampleDesc.Quality = 0;
-    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.BufferUsage =
+        DXGI_USAGE_BACK_BUFFER | DXGI_USAGE_RENDER_TARGET_OUTPUT;
     swapChainDesc.BufferCount = 2;
     swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     swapChainDesc.Flags = 0;
@@ -155,9 +142,6 @@ void DXHelperWrapper::CreateSizeDependentResources() {
         m_d3dDevice.Get(), &swapChainDesc, nullptr, &swapChain));
     swapChain.As(&m_swapChain);
 
-    // Ensure that DXGI does not queue more than one frame at a time. This both
-    // reduces latency and ensures that the application will only render after
-    // each VSync, minimizing power consumption.
     ThrowIfFailed(dxgiDevice->SetMaximumFrameLatency(1));
 
     Dispatcher->RunAsync(
@@ -169,55 +153,33 @@ void DXHelperWrapper::CreateSizeDependentResources() {
               ThrowIfFailed(reinterpret_cast<IUnknown*>(this)->QueryInterface(
                   IID_PPV_ARGS(&panelNative)));
 
-              // Associate swap chain with SwapChainPanel.  This must be done on
-              // the UI thread.
               ThrowIfFailed(panelNative->SetSwapChain(m_swapChain.Get()));
             },
             CallbackContext::Any));
-  }
+  } 
 
-  // Ensure the physical pixel size of the swap chain takes into account both
-  // the XAML SwapChainPanel's logical layout size and any cumulative
-  // composition scale applied due to zooming, render transforms, or the
-  // system's current scaling plateau. For example, if a 100x100 SwapChainPanel
-  // has a cumulative 2x scale transform applied, we instead create a 200x200
-  // swap chain to avoid artifacts from scaling it up by 2x, then apply an
-  // inverse 1/2x transform to the swap chain to cancel out the 2x transform.
-  DXGI_MATRIX_3X2_F inverseScale = {0};
-  inverseScale._11 = 1.0f / m_compositionScaleX;
-  inverseScale._22 = 1.0f / m_compositionScaleY;
+  ComPtr<IDXGISurface> dxgiBackbuffer;
+  m_swapChain->GetBuffer(0, IID_PPV_ARGS(&dxgiBackbuffer));
 
-  m_swapChain->SetMatrixTransform(&inverseScale);
+  D2D1_RENDER_TARGET_PROPERTIES renderTargetProps =
+      D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_HARDWARE,
+                                   D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
+                                                     D2D1_ALPHA_MODE_IGNORE));
 
-  D2D1_BITMAP_PROPERTIES1 bitmapProperties = BitmapProperties1(
-      D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-      PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-      m_dipsPerInch * m_compositionScaleX, m_dipsPerInch * m_compositionScaleY);
-
-  // Direct2D needs the DXGI version of the backbuffer surface pointer.
-  ComPtr<IDXGISurface> dxgiBackBuffer;
-  winrt::check_hresult(
-      m_swapChain->GetBuffer(0, IID_PPV_ARGS(&dxgiBackBuffer)));
-
-  // Get a D2D surface from the DXGI back buffer to use as the D2D render
-  // target.
-  winrt::check_hresult(m_d2dContext->CreateBitmapFromDxgiSurface(
-      dxgiBackBuffer.Get(), &bitmapProperties, &m_d2dTargetBitmap));
-
-  m_d2dContext->SetDpi(m_dipsPerInch * m_compositionScaleX,
-                       m_dipsPerInch * m_compositionScaleY);
-  m_d2dContext->SetTarget(m_d2dTargetBitmap.Get());
+  winrt::check_hresult(m_d2dFactory->CreateDxgiSurfaceRenderTarget(
+      dxgiBackbuffer.Get(), &renderTargetProps, m_renderTarget.GetAddressOf()));
+   
 }
 
 void DXHelperWrapper::Render() {
-  if (!m_loadingComplete || m_d2dContext == nullptr || m_swapChain == nullptr) {
+  if (!m_loadingComplete) {
     return;
   }
 
-  m_d2dContext->BeginDraw();
-  m_d2dContext->Clear(m_backgroundColor);
-
-  ThrowIfFailed(m_d2dContext->EndDraw());
+  m_renderTarget->BeginDraw();
+  m_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
+  m_renderTarget->Clear(D2D1::ColorF(D2D1::ColorF::White));
+  m_renderTarget->EndDraw();
 
   Present();
 }
@@ -234,6 +196,7 @@ void DXHelperWrapper::Present() {
   hr = m_swapChain->Present1(1, 0, &parameters);
 
   if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
+    OnDeviceLost();
     return;
   } else {
     winrt::check_hresult(hr);
@@ -248,6 +211,7 @@ void DXHelperWrapper::OnSizeChanged(Object ^ sender, SizeChangedEventArgs ^ e) {
     m_height = max(e->NewSize.Height, 1.0f);
 
     CreateSizeDependentResources();
+
   }
 }
 
@@ -261,6 +225,7 @@ void DXHelperWrapper::OnCompositionScaleChanged(SwapChainPanel ^ sender,
     m_compositionScaleY = this->CompositionScaleY;
 
     CreateSizeDependentResources();
+
   }
 }
 
@@ -293,15 +258,15 @@ void DXHelperWrapper::StopRenderLoop() { m_renderLoopWorker->Cancel(); }
 void DXHelperWrapper::OnDeviceLost() {
   m_loadingComplete = false;
 
+  m_renderTarget = nullptr;
+  m_renderTarget->Flush();
+  m_renderTarget.Reset();
+
   m_swapChain = nullptr;
 
   // Make sure the rendering state has been released.
   m_d3dContext->OMSetRenderTargets(0, nullptr, nullptr);
 
-  m_d2dContext->SetTarget(nullptr);
-  m_d2dTargetBitmap = nullptr;
-
-  m_d2dContext = nullptr;
   m_d2dDevice = nullptr;
 
   m_d3dContext->Flush();
@@ -310,4 +275,69 @@ void DXHelperWrapper::OnDeviceLost() {
   CreateSizeDependentResources();
 
   Render();
+}
+
+
+ComPtr<ID2D1Bitmap> DXHelper::CreateBitmapFromVideoSample(
+    IMFSample* pSample, const UINT32& width, const UINT32& height) {
+  ComPtr<IMFMediaBuffer> buffer;
+  winrt::check_hresult(pSample->ConvertToContiguousBuffer(&buffer));
+
+  BYTE* data = nullptr;
+  DWORD maxDataLength = 0;
+  DWORD currentDataLength = 0;
+
+  winrt::check_hresult(buffer->Lock(&data, &maxDataLength, &currentDataLength));
+
+  UINT32 pitch = width * sizeof(UINT32);
+
+  D2D1_BITMAP_PROPERTIES bitmapProperties = {};
+  ZeroMemory(&bitmapProperties, sizeof(bitmapProperties));
+  bitmapProperties.pixelFormat.format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  bitmapProperties.pixelFormat.alphaMode = D2D1_ALPHA_MODE_IGNORE;
+
+  ComPtr<ID2D1Bitmap> bitmap;
+  winrt::check_hresult(m_renderTarget->CreateBitmap(
+      D2D1::SizeU(width, height), data, pitch, bitmapProperties, &bitmap));
+
+  winrt::check_hresult(buffer->Unlock());
+
+  return bitmap;
+}
+
+void DXHelper::RenderBitmapOnWindow(ComPtr<ID2D1Bitmap> pBitmap) {
+  m_renderTarget->BeginDraw();
+  m_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
+  m_renderTarget->Clear(D2D1::ColorF(D2D1::ColorF::Black));
+
+  D2D1_SIZE_F window = m_renderTarget->GetSize();
+  D2D1_SIZE_F picture = pBitmap->GetSize();
+
+  float windowAR = window.width / window.height;
+  float pictureAR = picture.width / picture.height;
+
+  float left = 0.0f, top = 0.0f, right = 0.0f, bottom = 0.0f;
+  float scale = 0.0f;
+
+  if (windowAR > pictureAR) {
+    scale = window.height / 1080.0f;
+    float newWidth = 1920 * scale;
+    left = (window.width - newWidth) * 0.5f;
+    right = left + newWidth;
+    bottom = window.height;
+  } else {
+    scale = window.width / 1920.0f;
+    float newHeight = scale * 1080;
+    top = (window.height - newHeight) * 0.5f;
+    bottom = top + newHeight;
+    right = window.width;
+  }
+
+  D2D1_RECT_F destinationRect = D2D1::RectF(left, top, right, bottom);
+
+  m_renderTarget->DrawBitmap(pBitmap.Get(), destinationRect);
+
+  m_renderTarget->EndDraw();
+
+  winrt::check_hresult(m_swapChain->Present(1, 0));
 }
