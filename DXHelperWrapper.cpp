@@ -242,7 +242,7 @@ void DXHelperWrapper::StartRenderLoop() {
     while (action->Status == AsyncStatus::Started) {
       self->m_timer.Tick([&]() {
         critical_section::scoped_lock lock(self->m_criticalSection);
-        self->Render();
+        self->Render();   
       });
 
       self->m_dxgiOutput->WaitForVBlank();

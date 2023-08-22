@@ -253,7 +253,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <IgnoreAllDefaultLibraries>false</IgnoreAllDefaultLibraries>
-      <AdditionalDependencies>VideoPlayerLibrary.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>VideoPlayerLibrary.lib;mf.lib;dxgi.lib;d3d11.lib;d2d1.lib;dxguid.lib;mfplat.lib;mfuuid.lib;winmm.lib;Propsys.lib;mfreadwrite.lib;wmcodecdspuuid.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>D:\VideoPlayerLib\VideoPlayerLibrary\x64\Debug;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <ProjectReference>
@@ -279,6 +279,7 @@
     <ClInclude Include="pch.h" />
     <ClInclude Include="DXHelperWrapper.h" />
     <ClInclude Include="StepTimer.h" />
+    <ClInclude Include="VideoPlayerWrapper.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DXHelperWrapper.cpp" />
@@ -292,6 +293,10 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="VideoPlayerWrapper.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Media Include="SampleVideo25fps.mp4" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

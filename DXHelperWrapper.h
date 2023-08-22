@@ -5,6 +5,10 @@
 #include <ppltasks.h>
 
 #include "StepTimer.h"
+#include "VideoPlayerWrapper.h"
+
+using namespace LibVDWUP::Video;
+
 
 inline void ThrowIfFailed(HRESULT hr) {
   if (FAILED(hr)) {

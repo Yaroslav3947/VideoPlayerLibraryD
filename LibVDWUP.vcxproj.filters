@@ -9,10 +9,15 @@
   <ItemGroup>
     <ClCompile Include="pch.cpp" />
     <ClCompile Include="DXHelperWrapper.cpp" />
+    <ClCompile Include="VideoPlayerWrapper.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
     <ClInclude Include="DXHelperWrapper.h" />
     <ClInclude Include="StepTimer.h" />
+    <ClInclude Include="VideoPlayerWrapper.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Media Include="SampleVideo25fps.mp4" />
   </ItemGroup>
 </Project>
